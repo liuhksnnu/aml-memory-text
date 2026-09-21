@@ -5,12 +5,14 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any
 from rank_bm25 import BM25Okapi
 
-# 北京时间时区
 BEIJING_TZ = timezone(timedelta(hours=8))
 
 class MemorySystem:
     def __init__(self, db_path="memory.db"):
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        # 增加 timeout=20，并发高时不会立刻报错
+        self.conn = sqlite3.connect(db_path, check_same_thread=False, timeout=20)
+        # 开启 WAL 模式，允许读写同时进行
+        self.conn.execute("PRAGMA journal_mode=WAL;")
         self.cursor = self.conn.cursor()
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS facts (
@@ -57,7 +59,7 @@ class MemorySystem:
         )
         self.conn.commit()
         self._update_profile(user_id, content)
-        self._rebuild_index()
+        # 删掉了 self._rebuild_index()，这里不再重建索引，避免并发时CPU爆掉
         return unique_id
 
     def _update_profile(self, user_id: str, content: str):
@@ -77,6 +79,8 @@ class MemorySystem:
             self.conn.commit()
 
     def search_memory(self, user_id: str, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        # 每次搜索前才重建索引，把重建成本从 16 次并发写降低到偶尔读时才做
+        self._rebuild_index()
         results = []
         if self.bm25 and self.corpus:
             tokenized_query = query.split()
